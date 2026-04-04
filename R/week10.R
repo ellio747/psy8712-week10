@@ -1,107 +1,116 @@
 # Script Settings and Resources
 setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
-library(haven) # Read SPSS files
+# library(haven) # Read SPSS files
 library(tidyverse) # Data analysis tools
-library(caret) # Machine learning
+library(caret) # Machine learning; loaded per 2.7.1
 
 # Data Import and Cleaning
-gss_tbl <- read_sav("../data/GSS2016.sav", user_na = TRUE) %>% 
-  zap_missing() %>% 
-  filter(!is.na(mosthrs)) %>% 
-  rename(`work hours` = mosthrs) %>% 
-  select(-c(hrs1, hrs2)) %>% 
-  select(which(colMeans(is.na(.)) < 0.75)) %>% 
-  mutate(across(where(is.character), as.factor)) %>% 
-  mutate(`work hours` = as.numeric(`work hours`)) %>% 
-  as_tibble()
+gss_tbl <- haven::read_sav("../data/GSS2016.sav", user_na = T) %>% # imported calling `haven` for `read_sav` to read an SPSS file and user_na to remove user defined na variables
+  haven::zap_missing() %>% # used to convert tagged missingingness (-100, -99, -98, etc which I found running unique(gss_tbl$mosthrs without `zap_missing()`)
+  filter(!is.na(mosthrs)) %>% # keeps only the 570 observations in `mosthrs` that are not na; confirmed with length(gss_tbl$mosthrs)
+  # rename(`work hours` = mosthrs) %>% #renamed as per 2.5.3
+  select(-c(hrs1, hrs2)) %>% #removed as per 2.5.4
+  select(which(colMeans(is.na(.)) < 0.75)) %>% #retained only the variables which had < 75% missingness  
+  mutate(across(where(haven::is.labelled), as.numeric)) %>% # removed haven labeling
+  mutate(mosthrs = as.numeric(mosthrs)) %>% # turned work hours into a numeric call for visualization
+  as_tibble() # coerced to tibble as greater compatibility with `caret`
 
 # Visualization
-ggplot(gss_tbl, aes(x = `work hours`)) + 
-  geom_histogram()
+ggplot(gss_tbl, aes(x = mosthrs)) + # used ggplot to display `work hours`, from `gss_tbl`
+  geom_histogram(binwidth = 4) # selected histogram for a univariate distribution; I was getting a warning to pick a better binwidth; I chose 4 as it serves as a typical half workday
 
 # Analysis
 
 ## Define training and test sets
 set.seed(123)
-holdout_indices <- createDataPartition(gss_tbl$`work hours`, p = .75, list=F)
-gss_training <- gss_tbl[-holdout_indices,]
+holdout_indices <- createDataPartition(gss_tbl$mosthrs, p = .75, list=F) # establishes 75/25 split of data
+gss_training <- gss_tbl[-holdout_indices,] 
 gss_holdout <- gss_tbl[holdout_indices,]
+
 
 ## Define consistent folds 
 cv_control <- trainControl(
-  method="cv", 
-  number=10, 
-  verboseIter = T
+  method="cv", # cross validation
+  number=10, # 10-fold
+  search = "random",
+  verboseIter = T # will print the training log
 )
 
 ## Decide on hyperparameters to look at
-tune_grid <- expand.grid(
-  alpha = c(0,1),
-  lambda = seq(0.0001, 0.1, length = 10) # ,
-  # mtry = c(2, 3, 4, 5, 10, 20)
+tune_grid_enet <- expand.grid( # incorporated grid search for plausible range of hyperparamters
+  alpha = c(0,1), # this tunes between ridge and lasso to enable elastic net when using `glmnet` as method
+  lambda = seq(0.0001, 0.1, length = 10) #penalization/regularization parameter
 )
 
-## Which Models Running
-mods <- c("lm", "glmnet", "ranger", "xgbLinear")
+tune_grid_rf <- expand.grid( # incorporated grid search for plausible range of hyperparamters
+  mtry = c(23, 178, 267, 535), # sets default of rounded down square root of number of IVs, two intermediate values, and number of IVs; included based on nearZeroVariance(gss_training)
+  splitrule = c("variance", "extratrees", "maxstat"),  
+  min.node.size = 5 # 5 is the default for regression according to help("ranger")
+)
+
+tune_grid_xgb <- expand.grid( # incorporated grid search for plausible range of hyperparamters
+  nrounds = c(50, 150, 300), # number of boosting rounds
+  alpha = c(0, 1), # this tunes the L1 and L2 regularization parameter
+  lambda = seq(0.0001, 0.1, length = 5), # penalization/regularization cost parameter
+  eta = c(0.3, 0.5) # default boosters for linear 0.5; 0.3 is default for tree-based booster 
+)
 
 ## Run k-fold testing hyperparameters on training set
 
-# Four model types: #modelLookup(models)
-# OLS regression = "lm" no tuning parameters
-# elastic net = "glmnet" alpha and lambda (tuning parameters)
-# random forest = "ranger" mtry, splitrule, min.nod.size
-# “eXtreme Gradient Boosting” = xgbLinear alpha and lambda nrounds
-
 model1 <- train(
-  `work hours` ~ .,
+  mosthrs ~ ., # `work hours` from all variables in the dataset
   gss_training,
   na.action = na.pass,
   method = "lm",
-  preProcess = c("medianImpute","center","scale"),
+  preProcess = c("zv", "medianImpute","center","scale"), # there were 35 variables showing near zero variance which challenged the model; added in "zv" to account for these across all models
   trControl=cv_control
   )
 model1
 
 model2 <- train(
-  `work hours` ~ .,
+  mosthrs ~ .,
   gss_training,
   na.action = na.pass,
   method = "glmnet",
-  preProcess = c("medianImpute","center","scale"),
-  tuneGrid = tune_grid,
+  preProcess = c("zv", "medianImpute","center","scale"),
+  tuneGrid = tune_grid_enet,
   trControl = cv_control
 )
 model2
 
 model3 <- train(
-  `work hours` ~ .,
+  mosthrs ~ .,
   gss_training,
   na.action = na.pass,
   method = "ranger",
-  preProcess = c("medianImpute","center","scale"),
-  tuneGrid = tune_grid,
+  preProcess = c("zv", "medianImpute","center","scale"),
+  tuneGrid = tune_grid_rf,
   trControl=cv_control
 )
 model3
 
 model4 <- train(
-  `work hours` ~ .,
+  mosthrs ~.,
   gss_training,
   na.action = na.pass,
   method = "xgbLinear",
-  preProcess = c("medianImpute","center","scale"),
-  tuneGrid = tune_grid,
-  trControl=cv_control
+  preProcess = c("zv", "medianImpute", "center", "scale"),
+  tuneGrid = tune_grid_xgb,
+  trControl = cv_control
 )
-model3
+model4
 
 ## Examine k-fold CV results
 
 ## Compare to holdout CV results
+# gss_training_pp <- preProcess(gss_training, method = c("medianImpute","center","scale"))
 
 # Publication
 table1_tbl <- tibble(
-  algo = ,
-  cv_rsq = ,
-  ho_rsq = 
-)
+  algo = c(model1$method, model2$method, model3$method),# model4$method),
+  cv_rsq = c(model1$results$Rsquared, 
+             model2$results[model2$results$alpha == model2$bestTune$alpha & model2$results$lambda == model2$bestTune$lambda, ]$Rsquared, 
+             model3$results[model3$results$mtry == model3$bestTune$mtry & model3$results$splitrule == model3$bestTune$splitrule & model3$results$min.node.size == model3$bestTune$min.node.size, ]$Rsquared),# model4$results$Rsquared),
+  ho_rsq = c(1, 2, 3)
+) %>% 
+  write_csv(file = "../figs/table1.csv")
