@@ -3,6 +3,8 @@ setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
 # library(haven) # Read SPSS files
 library(tidyverse) # Data analysis tools
 library(caret) # Machine learning; loaded per 2.7.1
+# remotes::install_version("xgboost", version = "1.6.0.1", repos = "https://cran.r-project.org") # Compatible version of xgboost with caret - install this version in R Console before continuing. 
+library(xgboost)
 
 # Data Import and Cleaning
 gss_tbl <- haven::read_sav("../data/GSS2016.sav", user_na = T) %>% # imported calling `haven` for `read_sav` to read an SPSS file and user_na to remove user defined na variables
@@ -24,9 +26,12 @@ ggplot(gss_tbl, aes(x = mosthrs)) + # used ggplot to display `work hours`, from 
 ## Define training and test sets
 set.seed(123)
 holdout_indices <- createDataPartition(gss_tbl$mosthrs, p = .75, list=F) # establishes 75/25 split of data
-gss_training <- gss_tbl[-holdout_indices,] 
-gss_holdout <- gss_tbl[holdout_indices,]
+gss_training <- gss_tbl[holdout_indices,] 
+gss_holdout <- gss_tbl[-holdout_indices,]
 
+# gss_training_pp <- preProcess(gss_training,
+#                               method=c("zv","medianImpute","center","scale"))
+# gss_training_pp_df <- predict(gss_training_pp, gss_training)
 
 ## Define consistent folds 
 cv_control <- trainControl(
@@ -101,16 +106,29 @@ model4 <- train(
 model4
 
 ## Examine k-fold CV results
+summary(resamples(list(model1,model2, model3, model4)))
+dotplot(resamples(list(model1,model2, model3, model4)))
 
 ## Compare to holdout CV results
-# gss_training_pp <- preProcess(gss_training, method = c("medianImpute","center","scale"))
+pred1 <- predict(model1, newdata = gss_holdout, na.action = na.pass)
+pred2 <- predict(model2, newdata = gss_holdout, na.action = na.pass)
+pred3 <- predict(model3, newdata = gss_holdout, na.action = na.pass)
+pred4 <- predict(model4, newdata = gss_holdout, na.action = na.pass)
 
 # Publication
 table1_tbl <- tibble(
-  algo = c(model1$method, model2$method, model3$method),# model4$method),
-  cv_rsq = c(model1$results$Rsquared, 
-             model2$results[model2$results$alpha == model2$bestTune$alpha & model2$results$lambda == model2$bestTune$lambda, ]$Rsquared, 
-             model3$results[model3$results$mtry == model3$bestTune$mtry & model3$results$splitrule == model3$bestTune$splitrule & model3$results$min.node.size == model3$bestTune$min.node.size, ]$Rsquared),# model4$results$Rsquared),
-  ho_rsq = c(1, 2, 3)
+  algo = c(model1$method, model2$method, model3$method, model4$method),
+  cv_rsq = str_remove(round(c(getTrainPerf(model1)$TrainRsquared, 
+             getTrainPerf(model2)$TrainRsquared, 
+             getTrainPerf(model3)$TrainRsquared,
+             getTrainPerf(model4)$TrainRsquared), 2), "^0"),
+  ho_rsq = str_remove(round(c(postResample(pred1, gss_holdout$mosthrs)["Rsquared"], 
+             postResample(pred2, gss_holdout$mosthrs)["Rsquared"], 
+             postResample(pred3, gss_holdout$mosthrs)["Rsquared"], 
+             postResample(pred4, gss_holdout$mosthrs)["Rsquared"]), 2), "^0")
 ) %>% 
   write_csv(file = "../figs/table1.csv")
+
+# How did your results change between models? Why do you think this happened, specifically?
+# How did you results change between k-fold CV and holdout CV? Why do you think this happened, specifically?
+# Among the four models, which would you choose for a real-life prediction problem, and why? Are there tradeoffs? Write up to a paragraph.

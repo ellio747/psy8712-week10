@@ -1,4 +1,5 @@
 algo,cv_rsq,ho_rsq
-lm,0.027136791699795253,1
-glmnet,0.46029071072794403,2
-ranger,0.58602900794803,3
+lm,.02,.02
+glmnet,.47,.36
+ranger,.62,.6
+xgbLinear,.6,.54
